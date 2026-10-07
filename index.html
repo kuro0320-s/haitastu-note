@@ -33,9 +33,8 @@
   --danger:#ff8a80; --ok:#6fd3a0; color-scheme: dark;
 }
 *,*::before,*::after{box-sizing:inherit}
-*,*::before,*::after{box-sizing:inherit}
 [hidden]{display:none !important}
-html{scroll-padding-top:env(safe-area-inset-top,0px)}
+#gateWrap:empty{display:none}
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
 body{margin:0;background:var(--cloth);color:var(--ink);
   font-family:"Zen Kaku Gothic New","Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",Meiryo,sans-serif;
@@ -139,6 +138,9 @@ form textarea{min-height:90px;resize:vertical}
 .pin{width:26px;height:26px;border-radius:50% 50% 50% 0;background:#2c3d63;border:3px solid #f2b705;transform:rotate(-45deg);box-shadow:0 2px 6px rgba(0,0,0,.35)}
 .leaflet-container{font-family:inherit}
 .pop b{display:block;font-size:15px;line-height:1.3}.pop span{color:#5b6474;font-size:13px}
+.georesults{list-style:none;margin:8px 0 0;padding:0;background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.georesults button{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:12px 14px;min-height:44px;cursor:pointer}
+.georesults li:last-child button{border-bottom:0}
 .pop button{margin-top:8px;width:100%;min-height:38px;padding:6px 10px}
 </style>
 </head>
@@ -162,7 +164,8 @@ form textarea{min-height:90px;resize:vertical}
     <button role="tab" aria-selected="true" id="tabList">リスト</button>
     <button role="tab" aria-selected="false" id="tabMap">地図</button>
   </div>
-  <input class="search" id="q" type="search" placeholder="店名・ビル名・住所で検索" aria-label="検索">
+  <input class="search" id="q" type="search" placeholder="店名・ビル名・住所で検索（Enterで地図検索）" aria-label="検索">
+  <div id="geo"></div>
   <div class="notice" id="notice"></div>
   <ul class="list" id="list"><li class="empty">読み込み中…</li></ul>
   <div class="mapwrap" id="mapWrap" hidden>
@@ -295,7 +298,49 @@ form textarea{min-height:90px;resize:vertical}
     }).join("");
   }
   $("#list").addEventListener("click",e=>{ const b=e.target.closest(".spot"); if(b) openDetail(b.dataset.id); });
-  $("#q").addEventListener("input",e=>{ state.q=e.target.value; render(); });
+  // ---------- search ----------
+  let qT;
+  $("#q").addEventListener("input",e=>{ state.q=e.target.value; render(); clearTimeout(qT); qT=setTimeout(()=>afterSearch(false),400); });
+  $("#q").addEventListener("keydown",e=>{ if(e.key==="Enter" && !e.isComposing){ e.preventDefault(); $("#q").blur(); afterSearch(true); } });
+  function afterSearch(enter){
+    const q=state.q.trim(); const geo=$("#geo");
+    if(!q){ geo.innerHTML=""; return; }
+    const hits=filtered();
+    // 地図表示中なら、ヒットした納品先が全部見える位置に移動
+    if(M.map && !$("#mapWrap").hidden){
+      const ll=hits.filter(hasLL);
+      if(ll.length){ M.noFit=true; M.map.fitBounds(ll.map(s=>[s.lat,s.lng]),{padding:[40,40],maxZoom:17}); if(ll.length===1) M.markers[ll[0].id]?.openPopup(); }
+    }
+    geo.innerHTML=`<button class="btn ghost" id="geoBtn" style="width:100%;margin-top:8px">「${esc(q)}」を住所・地名で地図検索</button>`;
+    $("#geoBtn").onclick=()=>geocode(q);
+    if(enter && !hits.length) geocode(q);
+  }
+  // 国土地理院の住所検索（店名は不可、住所・地名・駅名など）
+  async function geocode(q){
+    const geo=$("#geo"); geo.innerHTML='<div class="notice">検索中…</div>';
+    try{
+      const r=await fetch("https://msearch.gsi.go.jp/address-search/AddressSearch?q="+encodeURIComponent(q));
+      const arr=await r.json();
+      if(!Array.isArray(arr) || !arr.length){ geo.innerHTML='<div class="notice">見つからなかった。「高松市〇〇町1-2」みたいに住所で入れてみて（店名は登録済みのものだけ検索できる）</div>'; return; }
+      const top=arr.slice(0,6);
+      geo.innerHTML='<ul class="georesults">'+top.map((a,i)=>`<li><button data-i="${i}">📍 ${esc(a.properties.title)}</button></li>`).join("")+'</ul>';
+      geo.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+        const a=top[+b.dataset.i]; const [lng,lat]=a.geometry.coordinates;
+        geo.innerHTML=""; showFound(lat,lng,a.properties.title);
+      });
+    }catch(e){ geo.innerHTML='<div class="notice">住所検索に失敗した。電波を確認してもう一回</div>'; }
+  }
+  function showFound(lat,lng,title){
+    M.noFit=true; setTab("map");
+    setTimeout(()=>{
+      if(M.found) M.found.remove();
+      const div=document.createElement("div"); div.className="pop";
+      div.innerHTML=`<b>${esc(title)}</b><button class="btn crate">ここに納品先を追加</button>`;
+      div.querySelector("button").onclick=()=>{ M.map.closePopup(); openForm({address:title,lat,lng}); };
+      M.found=L.circleMarker([lat,lng],{radius:11,color:"#fff",weight:3,fillColor:"#d93025",fillOpacity:1}).bindPopup(div).addTo(M.map);
+      M.map.setView([lat,lng],17); M.found.openPopup();
+    },80);
+  }
 
   // ---------- sheet ----------
   function openSheet(html){ killPick(); $("#sheetBody").innerHTML='<div class="grip"></div>'+html; $("#bg").classList.add("open"); $("#sheet").classList.add("open"); }
@@ -400,7 +445,7 @@ form textarea{min-height:90px;resize:vertical}
   // ---------- map ----------
   const HOME=[34.3505,134.0467]; // 高松駅あたり
   const M={map:null,markers:{},here:null,hereAcc:null,pick:null,pickMk:null};
-   const tiles=()=>L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png",{maxZoom:19,maxNativeZoom:18,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a>'});
+  const tiles=()=>L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png",{maxZoom:19,maxNativeZoom:18,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a>'});
   const goalIcon=()=>L.divIcon({className:"",html:'<div class="pin goalpin"></div>',iconSize:[32,32],iconAnchor:[16,32],popupAnchor:[0,-32]});
   const pinIcon=()=>L.divIcon({className:"",html:'<div class="pin"></div>',iconSize:[26,26],iconAnchor:[13,26],popupAnchor:[0,-26]});
   function initMap(){
