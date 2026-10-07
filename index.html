@@ -141,6 +141,7 @@ form textarea{min-height:90px;resize:vertical}
 .georesults{list-style:none;margin:8px 0 0;padding:0;background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .georesults button{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:12px 14px;min-height:44px;cursor:pointer}
 .georesults li:last-child button{border-bottom:0}
+.georesults small{color:var(--sub);font-size:12px}
 .pop button{margin-top:8px;width:100%;min-height:38px;padding:6px 10px}
 </style>
 </head>
@@ -306,37 +307,72 @@ form textarea{min-height:90px;resize:vertical}
     const q=state.q.trim(); const geo=$("#geo");
     if(!q){ geo.innerHTML=""; return; }
     const hits=filtered();
-    // 地図表示中なら、ヒットした納品先が全部見える位置に移動
+    // 地図表示中なら、ピンのある登録済みヒットが全部見える位置に移動
     if(M.map && !$("#mapWrap").hidden){
       const ll=hits.filter(hasLL);
-      if(ll.length){ M.noFit=true; M.map.fitBounds(ll.map(s=>[s.lat,s.lng]),{padding:[40,40],maxZoom:17}); if(ll.length===1) M.markers[ll[0].id]?.openPopup(); }
+      if(ll.length){ M.noFit=true; M.map.fitBounds(ll.map(s=>[s.lat,s.lng]),{padding:[40,40],maxZoom:17}); }
     }
-    geo.innerHTML=`<button class="btn ghost" id="geoBtn" style="width:100%;margin-top:8px">「${esc(q)}」を住所・地名で地図検索</button>`;
+    let html="";
+    if(hits.length){
+      html+='<ul class="georesults">'+hits.slice(0,6).map(s=>`<li><button data-sid="${esc(s.id)}">🍶 ${esc(s.name)}${s.building?"（"+esc(s.building)+"）":""}${hasLL(s)?"":'<small>　ピン未登録→住所から探す</small>'}</button></li>`).join("")+'</ul>';
+    }
+    html+=`<button class="btn ghost" id="geoBtn" style="width:100%;margin-top:8px">「${esc(q)}」を高松市内の住所・地名で検索</button>`;
+    geo.innerHTML=html;
+    geo.querySelectorAll("[data-sid]").forEach(b=>b.onclick=()=>{ const s=state.spots.find(x=>String(x.id)===b.dataset.sid); if(s) jumpToSpot(s); });
     $("#geoBtn").onclick=()=>geocode(q);
-    if(enter && !hits.length) geocode(q);
+    if(enter){ if(hits.length===1) jumpToSpot(hits[0]); else if(!hits.length) geocode(q); }
   }
-  // 国土地理院の住所検索（店名は不可、住所・地名・駅名など）
+  // 登録済みの納品先へ移動（ピンがなければ登録住所から場所を探す）
+  async function jumpToSpot(s){
+    $("#geo").innerHTML="";
+    if(hasLL(s)){ M.noFit=true; setTab("map"); setTimeout(()=>{ M.map.setView([s.lat,s.lng],18); M.markers[s.id]?.openPopup(); },80); return; }
+    if(!s.address){ toast("住所もピンも未登録。編集で追加してね"); openDetail(s.id); return; }
+    toast("登録住所から探してる…");
+    try{
+      const r=(await gsi(s.address))[0];
+      if(!r){ toast("登録住所から場所が見つからなかった"); openDetail(s.id); return; }
+      showFound(r.lat,r.lng,s.name+"（住所から推定）",s);
+    }catch(e){ toast("住所検索に失敗した。電波を確認して"); }
+  }
+  // 国土地理院の住所検索。高松市内（住所に「高松市」を含む or 高松駅から20km以内）だけに絞って近い順
+  async function gsi(q){
+    const r=await fetch("https://msearch.gsi.go.jp/address-search/AddressSearch?q="+encodeURIComponent(q));
+    const arr=await r.json();
+    if(!Array.isArray(arr)) return [];
+    const c={lat:HOME[0],lng:HOME[1]};
+    return arr.map(a=>({title:a.properties.title,lng:+a.geometry.coordinates[0],lat:+a.geometry.coordinates[1]}))
+      .map(a=>({...a,d:km(c,a)})).filter(a=>String(a.title).includes("高松市") || a.d<=20).sort((x,y)=>x.d-y.d);
+  }
   async function geocode(q){
     const geo=$("#geo"); geo.innerHTML='<div class="notice">検索中…</div>';
     try{
-      const r=await fetch("https://msearch.gsi.go.jp/address-search/AddressSearch?q="+encodeURIComponent(q));
-      const arr=await r.json();
-      if(!Array.isArray(arr) || !arr.length){ geo.innerHTML='<div class="notice">見つからなかった。「高松市〇〇町1-2」みたいに住所で入れてみて（店名は登録済みのものだけ検索できる）</div>'; return; }
-      const top=arr.slice(0,6);
-      geo.innerHTML='<ul class="georesults">'+top.map((a,i)=>`<li><button data-i="${i}">📍 ${esc(a.properties.title)}</button></li>`).join("")+'</ul>';
-      geo.querySelectorAll("button").forEach(b=>b.onclick=()=>{
-        const a=top[+b.dataset.i]; const [lng,lat]=a.geometry.coordinates;
-        geo.innerHTML=""; showFound(lat,lng,a.properties.title);
-      });
+      const top=(await gsi(q)).slice(0,6);
+      if(!top.length){ geo.innerHTML='<div class="notice">高松市内で見つからなかった。「高松市〇〇町1-2」みたいに住所で入れてみて（店名は登録済みのものだけ検索できる）</div>'; return; }
+      geo.innerHTML='<ul class="georesults">'+top.map((a,i)=>`<li><button data-i="${i}">📍 ${esc(a.title)}</button></li>`).join("")+'</ul>';
+      geo.querySelectorAll("button").forEach(b=>b.onclick=()=>{ const a=top[+b.dataset.i]; geo.innerHTML=""; showFound(a.lat,a.lng,a.title); });
     }catch(e){ geo.innerHTML='<div class="notice">住所検索に失敗した。電波を確認してもう一回</div>'; }
   }
-  function showFound(lat,lng,title){
+  function showFound(lat,lng,title,spot){
     M.noFit=true; setTab("map");
     setTimeout(()=>{
       if(M.found) M.found.remove();
       const div=document.createElement("div"); div.className="pop";
-      div.innerHTML=`<b>${esc(title)}</b><button class="btn crate">ここに納品先を追加</button>`;
-      div.querySelector("button").onclick=()=>{ M.map.closePopup(); openForm({address:title,lat,lng}); };
+      if(spot){
+        div.innerHTML=`<b>${esc(title)}</b><span>ずれてたら、詳細の「編集」でピンを直してね</span><button class="btn crate">この位置をピンとして保存</button><button class="btn ghost">詳細・コメント</button>`;
+        const bs=div.querySelectorAll("button");
+        bs[0].onclick=async()=>{
+          bs[0].disabled=true;
+          try{
+            await post({action:"update",id:spot.id,spot:{name:spot.name,building:spot.building||"",floor:spot.floor||"",address:spot.address||"",note:spot.note||"",lat,lng}});
+            M.map.closePopup(); if(M.found){ M.found.remove(); M.found=null; }
+            toast("ピンを保存した"); await load(true);
+          }catch(e){ toast("保存できなかった"); bs[0].disabled=false; }
+        };
+        bs[1].onclick=()=>openDetail(spot.id);
+      }else{
+        div.innerHTML=`<b>${esc(title)}</b><button class="btn crate">ここに納品先を追加</button>`;
+        div.querySelector("button").onclick=()=>{ M.map.closePopup(); openForm({address:title,lat,lng}); };
+      }
       M.found=L.circleMarker([lat,lng],{radius:11,color:"#fff",weight:3,fillColor:"#d93025",fillOpacity:1}).bindPopup(div).addTo(M.map);
       M.map.setView([lat,lng],17); M.found.openPopup();
     },80);
