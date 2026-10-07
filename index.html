@@ -142,6 +142,11 @@ form textarea{min-height:90px;resize:vertical}
 .georesults button{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:12px 14px;min-height:44px;cursor:pointer}
 .georesults li:last-child button{border-bottom:0}
 .georesults small{color:var(--sub);font-size:12px}
+.sortbar{display:flex;align-items:center;gap:8px;margin:10px 0 0;font-size:14px;color:var(--sub)}
+.sortbar select{flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);min-height:44px;font:inherit}
+.spot.base{border-left-color:var(--crate);background:color-mix(in srgb,var(--crate) 12%,var(--paper))}
+.badge{display:inline-block;font-size:12px;font-weight:700;background:var(--crate);color:var(--crate-ink);border-radius:6px;padding:1px 6px;margin-right:6px;vertical-align:2px}
+.pin.basepin{background:#b3261e;border-color:#fff}
 .pop button{margin-top:8px;width:100%;min-height:38px;padding:6px 10px}
 </style>
 </head>
@@ -168,6 +173,13 @@ form textarea{min-height:90px;resize:vertical}
   <input class="search" id="q" type="search" placeholder="店名・ビル名・住所で検索（Enterで地図検索）" aria-label="検索">
   <div id="geo"></div>
   <div class="notice" id="notice"></div>
+  <div class="sortbar" id="sortBar"><label for="sort">並び順</label>
+    <select id="sort">
+      <option value="near">お店から近い順</option>
+      <option value="far">お店から遠い順</option>
+      <option value="kana">50音順</option>
+      <option value="here">現在地から近い順</option>
+    </select></div>
   <ul class="list" id="list"><li class="empty">読み込み中…</li></ul>
   <div class="mapwrap" id="mapWrap" hidden>
     <div class="goal" id="goal" hidden>
@@ -195,7 +207,7 @@ form textarea{min-height:90px;resize:vertical}
 
   const $ = s => document.querySelector(s);
   const LS = { get:k=>{try{return localStorage.getItem(k)}catch{return null}}, set:(k,v)=>{try{localStorage.setItem(k,v)}catch{}}, del:k=>{try{localStorage.removeItem(k)}catch{}} };
-  const state = { me:LS.get("hn_name"), spots:[], comments:[], here:null, q:"", openId:null, timer:null };
+  const state = { sort:LS.get("hn_sort")||"near", me:LS.get("hn_name"), spots:[], comments:[], here:null, q:"", openId:null, timer:null };
 
   const esc = s => String(s ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   function toast(msg){ const t=$("#toast"); t.textContent=msg; t.style.display="block"; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display="none",2200); }
@@ -277,25 +289,49 @@ form textarea{min-height:90px;resize:vertical}
     },{enableHighAccuracy:true,timeout:12000,maximumAge:30000});
   }
   $("#locBtn").onclick=()=>locate();
+  $("#sort").value=state.sort;
+  $("#sort").onchange=e=>{ state.sort=e.target.value; LS.set("hn_sort",state.sort); if(state.sort==="here" && !state.here) locate(); render(); };
 
   // ---------- list ----------
+  // ===== お店（一番上に固定する納品先）の名前 =====
+  const BASE_NAME = "秋元酒店";
+  const isBase = s => String(s.name||"").includes(BASE_NAME);
+  const baseSpot = () => state.spots.find(isBase);
+  // 50音順用のキー：よみがながあればそれ、なければ店名。カタカナはひらがなに揃える
+  const kanaKey = s => String(s.kana||s.name||"").replace(/[\u30a1-\u30f6]/g,c=>String.fromCharCode(c.charCodeAt(0)-0x60));
+  const byKana = (a,b) => kanaKey(a).localeCompare(kanaKey(b),"ja");
   function filtered(){
     const q=state.q.trim().toLowerCase();
-    let arr=state.spots.filter(s=>!q || [s.name,s.building,s.floor,s.address,s.note].join(" ").toLowerCase().includes(q));
-    if(state.here){ arr=arr.map(s=>({...s,_d:hasLL(s)?km(state.here,s):Infinity})).sort((a,b)=>a._d-b._d); }
-    else arr=[...arr].sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"ja"));
+    let arr=state.spots.filter(s=>!q || [s.name,s.kana,s.building,s.floor,s.address,s.note].join(" ").toLowerCase().includes(q));
+    const base=baseSpot();
+    const ref = (state.sort==="near"||state.sort==="far") ? (base&&hasLL(base)?base:null) : (state.sort==="here" ? state.here : null);
+    arr=arr.map(s=>({...s,_d: ref&&hasLL(s)?km(ref,s):Infinity, _h: state.here&&hasLL(s)?km(state.here,s):Infinity}));
+    arr.sort((a,b)=>{
+      if(isBase(a)!==isBase(b)) return isBase(a)?-1:1;      // お店は常に一番上
+      if(!ref || state.sort==="kana") return byKana(a,b);
+      const fa=isFinite(a._d), fb=isFinite(b._d);
+      if(fa!==fb) return fa?-1:1;                              // ピン未登録は最後
+      if(!fa) return byKana(a,b);
+      const d = state.sort==="far" ? b._d-a._d : a._d-b._d;
+      return d || byKana(a,b);
+    });
     return arr;
   }
   function render(){
     drawMarkers();
     const ul=$("#list"); const arr=filtered();
     if(!state.spots.length){ ul.innerHTML='<li class="empty">まだ納品先がない。右下の「＋ 納品先を追加」から最初の1件を登録しよう</li>'; return; }
+    const bs=baseSpot();
+    $("#notice").textContent = (state.sort==="near"||state.sort==="far") && !(bs&&hasLL(bs)) ? `「${BASE_NAME}」をピン付きで登録すると、お店からの距離で並べられるよ（今は50音順）` : (state.sort==="here"&&!state.here ? "現在地を取得すると近い順に並ぶよ" : "");
     if(!arr.length){ ul.innerHTML='<li class="empty">「'+esc(state.q)+'」に当てはまる納品先はない</li>'; return; }
     ul.innerHTML=arr.map(s=>{
-      const d = state.here && isFinite(s._d) ? `<span class="dist">${dir(state.here,s)} ${fmtDist(s._d)}</span>` : "";
+      let d="";
+      if(isBase(s)) d = state.here && isFinite(s._h) ? `<span class="dist">${dir(state.here,s)} ${fmtDist(s._h)}</span>` : "";
+      else if((state.sort==="near"||state.sort==="far") && isFinite(s._d)) d=`<span class="dist">お店から ${fmtDist(s._d)}</span>`;
+      else if(state.here && isFinite(s._h)) d=`<span class="dist">${dir(state.here,s)} ${fmtDist(s._h)}</span>`;
       const b=[s.building,s.floor].filter(Boolean).join(" ");
       const last = s.lastText ? `<div class="last">💬 ${esc(s.lastText)} <span style="color:var(--sub);font-size:12px">${ago(s.lastAt)}</span></div>` : "";
-      return `<li><button class="spot" data-id="${esc(s.id)}"><div class="row"><span class="name">${esc(s.name)}</span>${d}</div>${b?`<div class="bld">🏢 ${esc(b)}</div>`:""}${last}</button></li>`;
+      return `<li><button class="spot${isBase(s)?" base":""}" data-id="${esc(s.id)}"><div class="row"><span class="name">${isBase(s)?'<span class="badge">お店</span>':""}${esc(s.name)}</span>${d}</div>${b?`<div class="bld">🏢 ${esc(b)}</div>`:""}${last}</button></li>`;
     }).join("");
   }
   $("#list").addEventListener("click",e=>{ const b=e.target.closest(".spot"); if(b) openDetail(b.dataset.id); });
@@ -363,7 +399,7 @@ form textarea{min-height:90px;resize:vertical}
         bs[0].onclick=async()=>{
           bs[0].disabled=true;
           try{
-            await post({action:"update",id:spot.id,spot:{name:spot.name,building:spot.building||"",floor:spot.floor||"",address:spot.address||"",note:spot.note||"",lat,lng}});
+            await post({action:"update",id:spot.id,spot:{name:spot.name,kana:spot.kana||"",building:spot.building||"",floor:spot.floor||"",address:spot.address||"",note:spot.note||"",lat,lng}});
             M.map.closePopup(); if(M.found){ M.found.remove(); M.found=null; }
             toast("ピンを保存した"); await load(true);
           }catch(e){ toast("保存できなかった"); bs[0].disabled=false; }
@@ -441,6 +477,7 @@ form textarea{min-height:90px;resize:vertical}
       <h2 id="sheetTitle">${editing?"納品先を編集":"納品先を追加"}</h2>
       <form id="f" autocomplete="off">
         <label>店名・納品先 *<input name="name" required maxlength="60" value="${esc(s.name)}" placeholder="例：居酒屋〇〇"></label>
+        <label>よみがな <span class="hint">50音順の並び替えに使う（ひらがな）</span><input name="kana" maxlength="40" value="${esc(s.kana)}" placeholder="例：いざかやまるまる"></label>
         <div class="two">
           <label>ビル名<input name="building" maxlength="60" value="${esc(s.building)}" placeholder="例：〇〇ビル"></label>
           <label>階<input name="floor" maxlength="12" value="${esc(s.floor)}" placeholder="B1 / 3F"></label>
@@ -467,7 +504,7 @@ form textarea{min-height:90px;resize:vertical}
       const name=f.name.value.trim(); if(!name) return;
       const llStr=f.ll.value.trim(); const ll=parseLL(llStr);
       if(llStr && !ll){ $("#llMsg").textContent="この形式は読めなかった。「34.34, 134.05」の形にしてみて"; return; }
-      const spot={name,building:f.building.value.trim(),floor:f.floor.value.trim(),address:f.address.value.trim(),note:f.note.value.trim(),
+      const spot={name,kana:f.kana.value.trim(),building:f.building.value.trim(),floor:f.floor.value.trim(),address:f.address.value.trim(),note:f.note.value.trim(),
         lat:ll?ll.lat:"",lng:ll?ll.lng:""};
       const btn=f.querySelector('[type="submit"]'); btn.disabled=true; btn.textContent="保存中…";
       try{
@@ -483,6 +520,7 @@ form textarea{min-height:90px;resize:vertical}
   const M={map:null,markers:{},here:null,hereAcc:null,pick:null,pickMk:null};
   const tiles=()=>L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png",{maxZoom:19,maxNativeZoom:18,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a>'});
   const goalIcon=()=>L.divIcon({className:"",html:'<div class="pin goalpin"></div>',iconSize:[32,32],iconAnchor:[16,32],popupAnchor:[0,-32]});
+  const baseIcon=()=>L.divIcon({className:"",html:'<div class="pin basepin"></div>',iconSize:[26,26],iconAnchor:[13,26],popupAnchor:[0,-26]});
   const pinIcon=()=>L.divIcon({className:"",html:'<div class="pin"></div>',iconSize:[26,26],iconAnchor:[13,26],popupAnchor:[0,-26]});
   function initMap(){
     if(M.map || !window.L) return;
@@ -507,7 +545,7 @@ form textarea{min-height:90px;resize:vertical}
       const bs=div.querySelectorAll("button");
       bs[0].onclick=()=>{ M.map.closePopup(); goTo(s.id); };
       bs[1].onclick=()=>openDetail(s.id);
-      M.markers[s.id]=L.marker([s.lat,s.lng],{icon:s.id===M.goal?goalIcon():pinIcon(),title:s.name,zIndexOffset:s.id===M.goal?1000:0}).bindPopup(div).addTo(M.map);
+      M.markers[s.id]=L.marker([s.lat,s.lng],{icon:s.id===M.goal?goalIcon():(isBase(s)?baseIcon():pinIcon()),title:s.name,zIndexOffset:s.id===M.goal?1000:0}).bindPopup(div).addTo(M.map);
     }
     M.fitOnce && M.fitOnce();
   }
@@ -565,7 +603,7 @@ form textarea{min-height:90px;resize:vertical}
   function setTab(t){
     const map=t==="map";
     $("#tabList").setAttribute("aria-selected",!map); $("#tabMap").setAttribute("aria-selected",map);
-    $("#list").hidden=map; $("#mapWrap").hidden=!map;
+    $("#list").hidden=map; $("#sortBar").hidden=map; $("#mapWrap").hidden=!map;
     if(!map) stopWatch(); else if(M.goal) startWatch();
     if(map){ initMap(); setTimeout(()=>{ M.map.invalidateSize(); drawMarkers(); drawHere(); },0); }
   }
