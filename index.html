@@ -397,7 +397,7 @@ form textarea{min-height:90px;resize:vertical}
   // ---------- map ----------
   const HOME=[34.3505,134.0467]; // 高松駅あたり
   const M={map:null,markers:{},here:null,hereAcc:null,pick:null,pickMk:null};
-  const tiles=()=>L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'});
+   const tiles=()=>L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png",{maxZoom:19,maxNativeZoom:18,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a>'});
   const goalIcon=()=>L.divIcon({className:"",html:'<div class="pin goalpin"></div>',iconSize:[32,32],iconAnchor:[16,32],popupAnchor:[0,-32]});
   const pinIcon=()=>L.divIcon({className:"",html:'<div class="pin"></div>',iconSize:[26,26],iconAnchor:[13,26],popupAnchor:[0,-26]});
   function initMap(){
